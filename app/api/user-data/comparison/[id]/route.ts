@@ -12,6 +12,6 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     return NextResponse.json({ ok: false, message: '收益对比删除参数无效。' }, { status: 400 });
   }
 
-  deleteComparison(visitorId, id);
+  await deleteComparison(visitorId, id);
   return NextResponse.json({ ok: true });
 }

@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: '收益对比参数无效。' }, { status: 400 });
   }
 
-  upsertComparison(body.visitorId, body.item);
+  await upsertComparison(body.visitorId, body.item);
   return NextResponse.json({ ok: true });
 }
 
@@ -49,6 +49,6 @@ export async function PUT(request: Request) {
     return NextResponse.json({ ok: false, message: '收益对比更新参数无效。' }, { status: 400 });
   }
 
-  syncComparisons(body.visitorId, body.items);
+  await syncComparisons(body.visitorId, body.items);
   return NextResponse.json({ ok: true });
 }

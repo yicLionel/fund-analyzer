@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: '买入决策参数无效。' }, { status: 400 });
   }
 
-  createDecision(body.visitorId, body.item);
+  await createDecision(body.visitorId, body.item);
   return NextResponse.json({ ok: true });
 }
 
@@ -45,7 +45,7 @@ export async function PUT(request: Request) {
   }
 
   for (const item of body.items) {
-    updateDecision(body.visitorId, item);
+    await updateDecision(body.visitorId, item);
   }
   return NextResponse.json({ ok: true });
 }

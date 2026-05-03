@@ -15,6 +15,6 @@ export async function DELETE(
     return NextResponse.json({ ok: false, message: '删除参数无效。' }, { status: 400 });
   }
 
-  deleteDecision(visitorId, id);
+  await deleteDecision(visitorId, id);
   return NextResponse.json({ ok: true });
 }

@@ -1,18 +1,19 @@
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { Pool, type PoolClient } from 'pg';
 import type { AssetType, ComparisonItem, DecisionItem, HistoryItem } from './types';
 
-const DB_DIR = path.join(process.cwd(), '.data');
-const DB_PATH = path.join(DB_DIR, 'fund-analyzer.sqlite');
-
-let db: DatabaseSync | null = null;
+declare global {
+  // Reuse connections across hot reloads and serverless warm invocations.
+  // eslint-disable-next-line no-var
+  var __fundAnalyzerPgPool: Pool | undefined;
+  // eslint-disable-next-line no-var
+  var __fundAnalyzerSchemaReady: Promise<void> | undefined;
+}
 
 interface HistoryRow {
   asset_type: AssetType;
   code: string;
   name: string;
-  latest_nav: number | null;
+  latest_nav: number | string | null;
   latest_nav_date: string | null;
   viewed_at: string;
 }
@@ -22,12 +23,12 @@ interface DecisionRow {
   asset_type: AssetType;
   code: string;
   name: string;
-  buy_price: number;
+  buy_price: number | string;
   buy_date: string;
-  buy_amount: number | null;
-  manual_return_pct: number | null;
-  current_price: number | null;
-  current_date: string | null;
+  buy_amount: number | string | null;
+  manual_return_pct: number | string | null;
+  current_price: number | string | null;
+  current_nav_date: string | null;
   created_at: string;
   updated_at: string | null;
 }
@@ -37,87 +38,110 @@ interface ComparisonRow {
   asset_type: AssetType;
   code: string;
   name: string;
-  latest_price: number | null;
+  latest_price: number | string | null;
   latest_date: string | null;
-  return_day1: number | null;
-  return_week1: number | null;
-  return_month1: number | null;
-  return_month3: number | null;
-  return_month6: number | null;
-  return_year1: number | null;
+  return_day1: number | string | null;
+  return_week1: number | string | null;
+  return_month1: number | string | null;
+  return_month3: number | string | null;
+  return_month6: number | string | null;
+  return_year1: number | string | null;
   updated_at: string;
 }
 
-function getDb() {
-  if (db) return db;
-  mkdirSync(DB_DIR, { recursive: true });
-  db = new DatabaseSync(DB_PATH);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS histories (
-      visitor_id TEXT NOT NULL,
-      asset_type TEXT NOT NULL,
-      code TEXT NOT NULL,
-      name TEXT NOT NULL,
-      latest_nav REAL,
-      latest_nav_date TEXT,
-      viewed_at TEXT NOT NULL,
-      PRIMARY KEY (visitor_id, asset_type, code)
-    );
-
-    CREATE TABLE IF NOT EXISTS decisions (
-      id TEXT PRIMARY KEY,
-      visitor_id TEXT NOT NULL,
-      asset_type TEXT NOT NULL,
-      code TEXT NOT NULL,
-      name TEXT NOT NULL,
-      buy_price REAL NOT NULL,
-      buy_date TEXT NOT NULL,
-      buy_amount REAL,
-      manual_return_pct REAL,
-      current_price REAL,
-      current_date TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS comparisons (
-      id TEXT NOT NULL,
-      visitor_id TEXT NOT NULL,
-      asset_type TEXT NOT NULL,
-      code TEXT NOT NULL,
-      name TEXT NOT NULL,
-      latest_price REAL,
-      latest_date TEXT,
-      return_day1 REAL,
-      return_week1 REAL,
-      return_month1 REAL,
-      return_month3 REAL,
-      return_month6 REAL,
-      return_year1 REAL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (visitor_id, id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_histories_visitor_viewed
-      ON histories(visitor_id, viewed_at DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_decisions_visitor_created
-      ON decisions(visitor_id, created_at DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_comparisons_visitor_updated
-      ON comparisons(visitor_id, updated_at DESC);
-  `);
-  try {
-    db.exec('ALTER TABLE decisions ADD COLUMN buy_amount REAL');
-  } catch {
-    // Existing local databases already have this column.
+function databaseUrl() {
+  const value = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+  if (!value) {
+    throw new Error('缺少 DATABASE_URL 或 POSTGRES_URL。部署到 Vercel 前请先绑定 PostgreSQL 数据库。');
   }
-  try {
-    db.exec('ALTER TABLE decisions ADD COLUMN manual_return_pct REAL');
-  } catch {
-    // Existing local databases already have this column.
-  }
-  return db;
+  return value;
+}
+
+function shouldUseSsl(connectionString: string) {
+  return !/localhost|127\.0\.0\.1/.test(connectionString);
+}
+
+function getPool() {
+  if (globalThis.__fundAnalyzerPgPool) return globalThis.__fundAnalyzerPgPool;
+  const connectionString = databaseUrl();
+  globalThis.__fundAnalyzerPgPool = new Pool({
+    connectionString,
+    max: 5,
+    ssl: shouldUseSsl(connectionString) ? { rejectUnauthorized: false } : undefined,
+  });
+  return globalThis.__fundAnalyzerPgPool;
+}
+
+function toNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function ensureSchema() {
+  if (globalThis.__fundAnalyzerSchemaReady) return globalThis.__fundAnalyzerSchemaReady;
+  globalThis.__fundAnalyzerSchemaReady = getPool()
+    .query(`
+      CREATE TABLE IF NOT EXISTS histories (
+        visitor_id TEXT NOT NULL,
+        asset_type TEXT NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL,
+        latest_nav DOUBLE PRECISION,
+        latest_nav_date TEXT,
+        viewed_at TEXT NOT NULL,
+        PRIMARY KEY (visitor_id, asset_type, code)
+      );
+
+      CREATE TABLE IF NOT EXISTS decisions (
+        id TEXT PRIMARY KEY,
+        visitor_id TEXT NOT NULL,
+        asset_type TEXT NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL,
+        buy_price DOUBLE PRECISION NOT NULL,
+        buy_date TEXT NOT NULL,
+        buy_amount DOUBLE PRECISION,
+        manual_return_pct DOUBLE PRECISION,
+        current_price DOUBLE PRECISION,
+        current_nav_date TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS comparisons (
+        id TEXT NOT NULL,
+        visitor_id TEXT NOT NULL,
+        asset_type TEXT NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL,
+        latest_price DOUBLE PRECISION,
+        latest_date TEXT,
+        return_day1 DOUBLE PRECISION,
+        return_week1 DOUBLE PRECISION,
+        return_month1 DOUBLE PRECISION,
+        return_month3 DOUBLE PRECISION,
+        return_month6 DOUBLE PRECISION,
+        return_year1 DOUBLE PRECISION,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (visitor_id, id)
+      );
+
+      ALTER TABLE decisions ADD COLUMN IF NOT EXISTS buy_amount DOUBLE PRECISION;
+      ALTER TABLE decisions ADD COLUMN IF NOT EXISTS manual_return_pct DOUBLE PRECISION;
+
+      CREATE INDEX IF NOT EXISTS idx_histories_visitor_viewed
+        ON histories(visitor_id, viewed_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_decisions_visitor_created
+        ON decisions(visitor_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_comparisons_visitor_updated
+        ON comparisons(visitor_id, updated_at DESC);
+    `)
+    .then(() => undefined);
+  return globalThis.__fundAnalyzerSchemaReady;
 }
 
 function historyFromRow(row: HistoryRow): HistoryItem {
@@ -125,7 +149,7 @@ function historyFromRow(row: HistoryRow): HistoryItem {
     assetType: row.asset_type,
     code: row.code,
     name: row.name,
-    latestNav: row.latest_nav,
+    latestNav: toNumber(row.latest_nav),
     latestNavDate: row.latest_nav_date,
     viewedAt: row.viewed_at,
   };
@@ -137,12 +161,12 @@ function decisionFromRow(row: DecisionRow): DecisionItem {
     assetType: row.asset_type,
     code: row.code,
     name: row.name,
-    buyPrice: row.buy_price,
+    buyPrice: toNumber(row.buy_price) ?? 0,
     buyDate: row.buy_date,
-    buyAmount: row.buy_amount,
-    manualReturnPct: row.manual_return_pct,
-    currentPrice: row.current_price,
-    currentDate: row.current_date,
+    buyAmount: toNumber(row.buy_amount),
+    manualReturnPct: toNumber(row.manual_return_pct),
+    currentPrice: toNumber(row.current_price),
+    currentDate: row.current_nav_date,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -154,70 +178,80 @@ function comparisonFromRow(row: ComparisonRow): ComparisonItem {
     assetType: row.asset_type,
     code: row.code,
     name: row.name,
-    latestPrice: row.latest_price,
+    latestPrice: toNumber(row.latest_price),
     latestDate: row.latest_date,
     returns: {
-      day1: row.return_day1,
-      week1: row.return_week1,
-      month1: row.return_month1,
-      month3: row.return_month3,
-      month6: row.return_month6,
-      year1: row.return_year1,
+      day1: toNumber(row.return_day1),
+      week1: toNumber(row.return_week1),
+      month1: toNumber(row.return_month1),
+      month3: toNumber(row.return_month3),
+      month6: toNumber(row.return_month6),
+      year1: toNumber(row.return_year1),
     },
     updatedAt: row.updated_at,
   };
 }
 
-export function getUserData(visitorId: string) {
-  const database = getDb();
-  const histories = database
-    .prepare('SELECT asset_type, code, name, latest_nav, latest_nav_date, viewed_at FROM histories WHERE visitor_id = ? ORDER BY viewed_at DESC LIMIT 10')
-    .all(visitorId) as unknown as HistoryRow[];
-  const decisions = database
-    .prepare('SELECT id, asset_type, code, name, buy_price, buy_date, buy_amount, manual_return_pct, current_price, "current_date", created_at, updated_at FROM decisions WHERE visitor_id = ? ORDER BY created_at DESC')
-    .all(visitorId) as unknown as DecisionRow[];
-  const comparisons = database
-    .prepare(`
-      SELECT id, asset_type, code, name, latest_price, latest_date, return_day1, return_week1, return_month1, return_month3, return_month6, return_year1, updated_at
-      FROM comparisons
-      WHERE visitor_id = ?
-      ORDER BY updated_at DESC
-    `)
-    .all(visitorId) as unknown as ComparisonRow[];
+export async function getUserData(visitorId: string) {
+  await ensureSchema();
+  const pool = getPool();
+  const [histories, decisions, comparisons] = await Promise.all([
+    pool.query<HistoryRow>(
+      'SELECT asset_type, code, name, latest_nav, latest_nav_date, viewed_at FROM histories WHERE visitor_id = $1 ORDER BY viewed_at DESC LIMIT 10',
+      [visitorId]
+    ),
+    pool.query<DecisionRow>(
+      'SELECT id, asset_type, code, name, buy_price, buy_date, buy_amount, manual_return_pct, current_price, current_nav_date, created_at, updated_at FROM decisions WHERE visitor_id = $1 ORDER BY created_at DESC',
+      [visitorId]
+    ),
+    pool.query<ComparisonRow>(
+      `
+        SELECT id, asset_type, code, name, latest_price, latest_date, return_day1, return_week1, return_month1, return_month3, return_month6, return_year1, updated_at
+        FROM comparisons
+        WHERE visitor_id = $1
+        ORDER BY updated_at DESC
+      `,
+      [visitorId]
+    ),
+  ]);
 
   return {
-    histories: histories.map(historyFromRow),
-    decisions: decisions.map(decisionFromRow),
-    comparisons: comparisons.map(comparisonFromRow),
+    histories: histories.rows.map(historyFromRow),
+    decisions: decisions.rows.map(decisionFromRow),
+    comparisons: comparisons.rows.map(comparisonFromRow),
   };
 }
 
-export function upsertHistory(visitorId: string, item: HistoryItem) {
-  getDb()
-    .prepare(`
+export async function upsertHistory(visitorId: string, item: HistoryItem) {
+  await ensureSchema();
+  await getPool().query(
+    `
       INSERT INTO histories (visitor_id, asset_type, code, name, latest_nav, latest_nav_date, viewed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT(visitor_id, asset_type, code)
       DO UPDATE SET
         name = excluded.name,
         latest_nav = excluded.latest_nav,
         latest_nav_date = excluded.latest_nav_date,
         viewed_at = excluded.viewed_at
-    `)
-    .run(visitorId, item.assetType, item.code, item.name, item.latestNav ?? null, item.latestNavDate ?? null, item.viewedAt);
+    `,
+    [visitorId, item.assetType, item.code, item.name, item.latestNav ?? null, item.latestNavDate ?? null, item.viewedAt]
+  );
 }
 
-export function clearHistories(visitorId: string) {
-  getDb().prepare('DELETE FROM histories WHERE visitor_id = ?').run(visitorId);
+export async function clearHistories(visitorId: string) {
+  await ensureSchema();
+  await getPool().query('DELETE FROM histories WHERE visitor_id = $1', [visitorId]);
 }
 
-export function createDecision(visitorId: string, item: DecisionItem) {
-  getDb()
-    .prepare(`
-      INSERT INTO decisions (id, visitor_id, asset_type, code, name, buy_price, buy_date, buy_amount, manual_return_pct, current_price, "current_date", created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
+export async function createDecision(visitorId: string, item: DecisionItem) {
+  await ensureSchema();
+  await getPool().query(
+    `
+      INSERT INTO decisions (id, visitor_id, asset_type, code, name, buy_price, buy_date, buy_amount, manual_return_pct, current_price, current_nav_date, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `,
+    [
       item.id,
       visitorId,
       item.assetType,
@@ -230,32 +264,36 @@ export function createDecision(visitorId: string, item: DecisionItem) {
       item.currentPrice ?? null,
       item.currentDate ?? null,
       item.createdAt,
-      item.updatedAt ?? null
-    );
+      item.updatedAt ?? null,
+    ]
+  );
 }
 
-export function updateDecision(visitorId: string, item: DecisionItem) {
-  getDb()
-    .prepare(`
+export async function updateDecision(visitorId: string, item: DecisionItem) {
+  await ensureSchema();
+  await getPool().query(
+    `
       UPDATE decisions
-      SET name = ?, buy_amount = ?, manual_return_pct = ?, current_price = ?, "current_date" = ?, updated_at = ?
-      WHERE visitor_id = ? AND id = ?
-    `)
-    .run(item.name, item.buyAmount ?? null, item.manualReturnPct ?? null, item.currentPrice ?? null, item.currentDate ?? null, item.updatedAt ?? null, visitorId, item.id);
+      SET name = $1, buy_amount = $2, manual_return_pct = $3, current_price = $4, current_nav_date = $5, updated_at = $6
+      WHERE visitor_id = $7 AND id = $8
+    `,
+    [item.name, item.buyAmount ?? null, item.manualReturnPct ?? null, item.currentPrice ?? null, item.currentDate ?? null, item.updatedAt ?? null, visitorId, item.id]
+  );
 }
 
-export function deleteDecision(visitorId: string, id: string) {
-  getDb().prepare('DELETE FROM decisions WHERE visitor_id = ? AND id = ?').run(visitorId, id);
+export async function deleteDecision(visitorId: string, id: string) {
+  await ensureSchema();
+  await getPool().query('DELETE FROM decisions WHERE visitor_id = $1 AND id = $2', [visitorId, id]);
 }
 
-export function upsertComparison(visitorId: string, item: ComparisonItem) {
-  getDb()
-    .prepare(`
+async function upsertComparisonWithClient(client: Pool | PoolClient, visitorId: string, item: ComparisonItem) {
+  await client.query(
+    `
       INSERT INTO comparisons (
         id, visitor_id, asset_type, code, name, latest_price, latest_date,
         return_day1, return_week1, return_month1, return_month3, return_month6, return_year1, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       ON CONFLICT(visitor_id, id)
       DO UPDATE SET
         asset_type = excluded.asset_type,
@@ -270,8 +308,8 @@ export function upsertComparison(visitorId: string, item: ComparisonItem) {
         return_month6 = excluded.return_month6,
         return_year1 = excluded.return_year1,
         updated_at = excluded.updated_at
-    `)
-    .run(
+    `,
+    [
       item.id,
       visitorId,
       item.assetType,
@@ -285,18 +323,35 @@ export function upsertComparison(visitorId: string, item: ComparisonItem) {
       item.returns.month3 ?? null,
       item.returns.month6 ?? null,
       item.returns.year1 ?? null,
-      item.updatedAt
-    );
+      item.updatedAt,
+    ]
+  );
 }
 
-export function syncComparisons(visitorId: string, items: ComparisonItem[]) {
-  const database = getDb();
-  database.prepare('DELETE FROM comparisons WHERE visitor_id = ?').run(visitorId);
-  for (const item of items) {
-    upsertComparison(visitorId, item);
+export async function upsertComparison(visitorId: string, item: ComparisonItem) {
+  await ensureSchema();
+  await upsertComparisonWithClient(getPool(), visitorId, item);
+}
+
+export async function syncComparisons(visitorId: string, items: ComparisonItem[]) {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM comparisons WHERE visitor_id = $1', [visitorId]);
+    for (const item of items) {
+      await upsertComparisonWithClient(client, visitorId, item);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
-export function deleteComparison(visitorId: string, id: string) {
-  getDb().prepare('DELETE FROM comparisons WHERE visitor_id = ? AND id = ?').run(visitorId, id);
+export async function deleteComparison(visitorId: string, id: string) {
+  await ensureSchema();
+  await getPool().query('DELETE FROM comparisons WHERE visitor_id = $1 AND id = $2', [visitorId, id]);
 }

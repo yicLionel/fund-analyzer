@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: '历史记录参数无效。' }, { status: 400 });
   }
 
-  upsertHistory(body.visitorId, body.item);
+  await upsertHistory(body.visitorId, body.item);
   return NextResponse.json({ ok: true });
 }
 
@@ -34,6 +34,6 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ ok: false, message: '缺少有效的 visitorId。' }, { status: 400 });
   }
 
-  clearHistories(visitorId);
+  await clearHistories(visitorId);
   return NextResponse.json({ ok: true });
 }
