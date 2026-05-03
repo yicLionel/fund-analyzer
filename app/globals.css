@@ -254,6 +254,12 @@ a { color: inherit; }
   padding: 16px;
 }
 
+.trackingCard {
+  margin-top: 14px;
+  border-radius: 8px;
+  padding: 16px;
+}
+
 .moduleHeader {
   display: flex;
   justify-content: space-between;
@@ -275,6 +281,16 @@ a { color: inherit; }
 .ghostButton:hover {
   color: var(--text);
   border-color: rgba(255,255,255,0.28);
+}
+
+.ghostButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.dangerButton:hover {
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fecaca;
 }
 
 .historyList {
@@ -341,6 +357,82 @@ a { color: inherit; }
   text-align: center;
 }
 
+.decisionList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.decisionItem {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.035);
+  padding: 14px;
+}
+
+.decisionHead,
+.decisionActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.decisionHead h3 {
+  margin: 6px 0 0;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.decisionStatus {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.decisionStatus.up {
+  background: rgba(239,68,68,0.16);
+  color: #fecaca;
+}
+
+.decisionStatus.down {
+  background: rgba(37,99,235,0.16);
+  color: #bfdbfe;
+}
+
+.decisionMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.decisionMetrics div {
+  border-left: 2px solid var(--line-strong);
+  background: rgba(0,0,0,0.12);
+  padding: 10px;
+}
+
+.decisionMetrics span,
+.decisionMetrics small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.decisionMetrics strong {
+  display: block;
+  font-size: 20px;
+  line-height: 1.45;
+}
+
+.decisionActions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
 .resultHeader {
   display: flex;
   justify-content: space-between;
@@ -349,6 +441,22 @@ a { color: inherit; }
   margin-top: 18px;
   border-radius: 8px;
   padding: 18px;
+}
+
+.trackerAction {
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+  cursor: pointer;
+  font-weight: 900;
+  min-height: 44px;
+  padding: 0 16px;
+  white-space: nowrap;
+}
+
+.trackerAction:hover {
+  background: rgba(239, 68, 68, 0.18);
 }
 
 .resultHeader h2 {
@@ -547,7 +655,8 @@ a { color: inherit; }
   }
 
   .kvGrid,
-  .historyList {
+  .historyList,
+  .decisionList {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -581,6 +690,8 @@ a { color: inherit; }
   .signalStack,
   .kvGrid,
   .historyList,
+  .decisionList,
+  .decisionMetrics,
   .moduleHeader {
     grid-template-columns: 1fr;
     display: grid;

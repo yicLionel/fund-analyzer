@@ -1,6 +1,7 @@
 export type RangeKey = '1m' | '3m' | '6m' | '1y';
 export type TrendLabel = '偏强' | '震荡' | '偏弱' | '无法判断';
 export type ConfidenceLabel = '高' | '中' | '低';
+export type AssetType = 'fund' | 'stock';
 
 export interface ReturnStats {
   day1?: number | null;
@@ -82,6 +83,28 @@ export interface AnalysisResult {
 export interface SourceItem {
   name: string;
   desc: string;
+}
+
+export interface HistoryItem {
+  assetType: AssetType;
+  code: string;
+  name: string;
+  latestNav?: number | null;
+  latestNavDate?: string | null;
+  viewedAt: string;
+}
+
+export interface DecisionItem {
+  id: string;
+  assetType: AssetType;
+  code: string;
+  name: string;
+  buyPrice: number;
+  buyDate: string;
+  currentPrice?: number | null;
+  currentDate?: string | null;
+  createdAt: string;
+  updatedAt?: string | null;
 }
 
 export interface BacktestHorizonResult {

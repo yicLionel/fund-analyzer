@@ -2,11 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import NavChart from '@/components/NavChart';
-import type { FundAnalysisResponse, RangeKey, StockAnalysisResponse } from '@/lib/types';
+import type { AssetType, DecisionItem, FundAnalysisResponse, HistoryItem, RangeKey, StockAnalysisResponse } from '@/lib/types';
 
-const FUND_HISTORY_STORAGE_KEY = 'fund-analyzer:fund-history';
+const VISITOR_ID_STORAGE_KEY = 'fund-analyzer:visitor-id';
 const MAX_HISTORY_ITEMS = 10;
-type AssetType = 'fund' | 'stock';
 type AnalysisResponse = FundAnalysisResponse | StockAnalysisResponse;
 
 const RANGE_OPTIONS: Array<{ key: RangeKey; label: string }> = [
@@ -16,27 +15,35 @@ const RANGE_OPTIONS: Array<{ key: RangeKey; label: string }> = [
   { key: '1y', label: '近一年' },
 ];
 
-interface FundHistoryItem {
-  assetType?: AssetType;
-  code: string;
-  name: string;
-  latestNav?: number | null;
-  latestNavDate?: string | null;
-  viewedAt: string;
-}
-
-function isFundHistoryItem(value: unknown): value is FundHistoryItem {
+function isHistoryItem(value: unknown): value is HistoryItem {
   if (!value || typeof value !== 'object') return false;
-  const item = value as Partial<FundHistoryItem>;
+  const item = value as Partial<HistoryItem>;
   const navValid = item.latestNav === undefined || item.latestNav === null || typeof item.latestNav === 'number';
   const navDateValid = item.latestNavDate === undefined || item.latestNavDate === null || typeof item.latestNavDate === 'string';
   return (
+    (item.assetType === 'fund' || item.assetType === 'stock') &&
     typeof item.code === 'string' &&
     /^\d{6}$/.test(item.code) &&
     typeof item.name === 'string' &&
     typeof item.viewedAt === 'string' &&
     navValid &&
     navDateValid
+  );
+}
+
+function isDecisionItem(value: unknown): value is DecisionItem {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<DecisionItem>;
+  return (
+    typeof item.id === 'string' &&
+    (item.assetType === 'fund' || item.assetType === 'stock') &&
+    typeof item.code === 'string' &&
+    /^\d{6}$/.test(item.code) &&
+    typeof item.name === 'string' &&
+    typeof item.buyPrice === 'number' &&
+    Number.isFinite(item.buyPrice) &&
+    typeof item.buyDate === 'string' &&
+    typeof item.createdAt === 'string'
   );
 }
 
@@ -79,12 +86,18 @@ function fmtDateTime(value: string) {
   });
 }
 
-function removeStoredHistory() {
-  try {
-    localStorage.removeItem(FUND_HISTORY_STORAGE_KEY);
-  } catch {
-    // Ignore storage failures so the UI remains usable when browser storage is blocked.
-  }
+function fmtDate(value?: string | null) {
+  if (!value) return 'N/A';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString('zh-CN');
+}
+
+function daysBetween(from: string, to?: string | null) {
+  const start = new Date(from).getTime();
+  const end = to ? new Date(to).getTime() : Date.now();
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  return Math.max(0, Math.floor((end - start) / (24 * 60 * 60 * 1000)));
 }
 
 function TrendTag({ label }: { label: string }) {
@@ -103,7 +116,10 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<RangeKey>('3m');
   const [result, setResult] = useState<AnalysisResponse | null>(null);
-  const [history, setHistory] = useState<FundHistoryItem[]>([]);
+  const [visitorId, setVisitorId] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [decisions, setDecisions] = useState<DecisionItem[]>([]);
+  const [trackingLoading, setTrackingLoading] = useState(false);
 
   const currentSeries = useMemo(() => {
     if (!result) return [];
@@ -162,22 +178,56 @@ export default function HomePage() {
     };
   }, [assetType, code, result]);
 
+  async function loadUserData(nextVisitorId: string) {
+    try {
+      const res = await fetch(`/api/user-data?visitorId=${encodeURIComponent(nextVisitorId)}`);
+      const json = (await res.json()) as {
+        ok?: boolean;
+        histories?: unknown;
+        decisions?: unknown;
+      };
+      if (!res.ok || !json.ok) return;
+      setHistory(Array.isArray(json.histories) ? json.histories.filter(isHistoryItem).slice(0, MAX_HISTORY_ITEMS) : []);
+      setDecisions(Array.isArray(json.decisions) ? json.decisions.filter(isDecisionItem) : []);
+    } catch {
+      setError('读取数据库历史记录失败，请稍后重试。');
+    }
+  }
+
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(FUND_HISTORY_STORAGE_KEY);
-      if (!raw) return;
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
-      setHistory(parsed.filter(isFundHistoryItem).slice(0, MAX_HISTORY_ITEMS));
+      let nextVisitorId = localStorage.getItem(VISITOR_ID_STORAGE_KEY);
+      if (!nextVisitorId) {
+        nextVisitorId = crypto.randomUUID();
+        localStorage.setItem(VISITOR_ID_STORAGE_KEY, nextVisitorId);
+      }
+      setVisitorId(nextVisitorId);
+      void loadUserData(nextVisitorId);
     } catch {
-      removeStoredHistory();
+      const fallback = `visitor-${Date.now()}`;
+      setVisitorId(fallback);
+      void loadUserData(fallback);
     }
   }, []);
+
+  async function persistDecisionUpdates(next: DecisionItem[]) {
+    setDecisions(next);
+    try {
+      if (!visitorId) return;
+      await fetch('/api/user-data/decision', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitorId, items: next }),
+      });
+    } catch {
+      setError('保存买入追踪更新失败，请稍后重试。');
+    }
+  }
 
   function recordFundHistory(data: AnalysisResponse, nextAssetType: AssetType) {
     if (!data.basic) return;
 
-    const item: FundHistoryItem = {
+    const item: HistoryItem = {
       assetType: nextAssetType,
       code: data.basic.code || data.code,
       name: data.basic.name || data.code,
@@ -188,18 +238,101 @@ export default function HomePage() {
 
     setHistory((prev) => {
       const next = [item, ...prev.filter((entry) => entry.code !== item.code || (entry.assetType ?? 'fund') !== item.assetType)].slice(0, MAX_HISTORY_ITEMS);
-      try {
-        localStorage.setItem(FUND_HISTORY_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // localStorage may be unavailable in private mode; keep in-memory history for this session.
-      }
       return next;
     });
+
+    if (visitorId) {
+      void fetch('/api/user-data/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitorId, item }),
+      }).catch(() => setError('保存历史查询失败，请稍后重试。'));
+    }
   }
 
-  function clearHistory() {
+  async function clearHistory() {
     setHistory([]);
-    removeStoredHistory();
+    if (!visitorId) return;
+    try {
+      await fetch(`/api/user-data/history?visitorId=${encodeURIComponent(visitorId)}`, { method: 'DELETE' });
+    } catch {
+      setError('清空数据库历史记录失败，请稍后重试。');
+    }
+  }
+
+  function addBuyDecision() {
+    if (!result?.basic || display.latestValue === null || display.latestValue === undefined || Number.isNaN(display.latestValue)) {
+      setError('当前没有可记录的买入价格，请先完成一次有效查询。');
+      return;
+    }
+
+    const nextAssetType: AssetType = isStockResult(result) ? 'stock' : 'fund';
+    const item: DecisionItem = {
+      id: `${nextAssetType}-${display.code}-${Date.now()}`,
+      assetType: nextAssetType,
+      code: display.code,
+      name: display.name,
+      buyPrice: display.latestValue,
+      buyDate: display.dateValue ?? new Date().toISOString().slice(0, 10),
+      currentPrice: display.latestValue,
+      currentDate: display.dateValue ?? null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setDecisions([item, ...decisions]);
+    if (visitorId) {
+      void fetch('/api/user-data/decision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitorId, item }),
+      }).catch(() => setError('保存买入追踪失败，请稍后重试。'));
+    }
+    setError(null);
+  }
+
+  async function refreshDecisionPrices(targets = decisions) {
+    if (!targets.length) return;
+    setTrackingLoading(true);
+    setError(null);
+    try {
+      const refreshed = await Promise.all(
+        targets.map(async (item) => {
+          try {
+            const res = await fetch(`/api/${item.assetType}/${item.code}`);
+            const json = (await res.json()) as AnalysisResponse & { message?: string };
+            if (!res.ok || !json.ok || !json.basic) return item;
+            return {
+              ...item,
+              name: json.basic.name || item.name,
+              currentPrice: isStockResult(json) ? json.basic.latestClose ?? item.currentPrice ?? null : json.basic.latestNav ?? item.currentPrice ?? null,
+              currentDate: isStockResult(json) ? json.basic.latestDate ?? json.dataDate ?? item.currentDate ?? null : json.basic.latestNavDate ?? json.dataDate ?? item.currentDate ?? null,
+              updatedAt: new Date().toISOString(),
+            };
+          } catch {
+            return item;
+          }
+        })
+      );
+
+      const refreshedById = new Map(refreshed.map((item) => [item.id, item]));
+      await persistDecisionUpdates(decisions.map((item) => refreshedById.get(item.id) ?? item));
+    } finally {
+      setTrackingLoading(false);
+    }
+  }
+
+  async function removeDecision(id: string) {
+    const target = decisions.find((item) => item.id === id);
+    if (!target) return;
+    if (!window.confirm(`确定移除 ${target.name} 的买入追踪记录吗？这会删除本地保存的这条记录。`)) return;
+    setDecisions(decisions.filter((item) => item.id !== id));
+    if (!visitorId) return;
+    try {
+      await fetch(`/api/user-data/decision/${encodeURIComponent(id)}?visitorId=${encodeURIComponent(visitorId)}`, { method: 'DELETE' });
+    } catch {
+      setError('删除买入追踪失败，请稍后重试。');
+    }
   }
 
   async function queryAsset(targetCode?: string, targetAssetType: AssetType = assetType) {
@@ -344,6 +477,72 @@ export default function HomePage() {
         )}
       </section>
 
+      <section className="card trackingCard">
+        <div className="moduleHeader">
+          <div>
+            <div className="sectionTitle">买入决策追踪</div>
+            <div className="small">记录某次买入时点，后续刷新当前价格，观察这笔决策到现在是涨是跌。</div>
+          </div>
+          {decisions.length ? (
+            <button className="ghostButton" onClick={() => refreshDecisionPrices()} disabled={trackingLoading} type="button">
+              {trackingLoading ? '刷新中...' : '刷新追踪'}
+            </button>
+          ) : null}
+        </div>
+
+        {decisions.length ? (
+          <div className="decisionList">
+            {decisions.map((item) => {
+              const latestPrice = item.currentPrice ?? item.buyPrice;
+              const changePct = item.buyPrice ? ((latestPrice - item.buyPrice) / item.buyPrice) * 100 : null;
+              const holdingDays = daysBetween(item.buyDate, item.currentDate);
+              const status = changePct === null ? '未知' : changePct >= 0 ? '盈利' : '亏损';
+              return (
+                <article className="decisionItem" key={item.id}>
+                  <div className="decisionHead">
+                    <div>
+                      <span className="historyCode">{assetLabel(item.assetType)} · {item.code}</span>
+                      <h3>{item.name}</h3>
+                    </div>
+                    <span className={`decisionStatus ${changePct !== null && changePct >= 0 ? 'up' : 'down'}`}>{status}</span>
+                  </div>
+                  <div className="decisionMetrics">
+                    <div>
+                      <span>买入价格</span>
+                      <strong>{fmtNum(item.buyPrice)}</strong>
+                      <small>{fmtDate(item.buyDate)}</small>
+                    </div>
+                    <div>
+                      <span>当前价格</span>
+                      <strong>{fmtNum(latestPrice)}</strong>
+                      <small>{fmtDate(item.currentDate)}</small>
+                    </div>
+                    <div>
+                      <span>累计涨跌</span>
+                      <strong>{fmtSignedPct(changePct)}</strong>
+                      <small>{holdingDays === null ? '持有天数 N/A' : `持有 ${holdingDays} 天`}</small>
+                    </div>
+                  </div>
+                  <div className="decisionActions">
+                    <button className="ghostButton" onClick={() => queryAsset(item.code, item.assetType)} type="button">
+                      查看分析
+                    </button>
+                    <button className="ghostButton" onClick={() => refreshDecisionPrices([item])} disabled={trackingLoading} type="button">
+                      刷新
+                    </button>
+                    <button className="ghostButton dangerButton" onClick={() => removeDecision(item.id)} type="button">
+                      移除
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="emptyState">暂无买入追踪。查询某只基金或股票后，点击“记录买入决策”即可开始跟踪。</div>
+        )}
+      </section>
+
       {error ? (
         <div style={{ marginTop: 16 }} className="error">
           {error}
@@ -382,6 +581,9 @@ export default function HomePage() {
                 <strong>{fmtSignedPct(primaryBacktest?.averageExcessReturn)}</strong>
               </div>
             </div>
+            <button className="trackerAction" onClick={addBuyDecision} type="button">
+              记录买入决策
+            </button>
           </section>
 
           <div className="grid">
