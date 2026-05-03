@@ -2,11 +2,31 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import NavChart from '@/components/NavChart';
-import type { AssetType, DecisionItem, FundAnalysisResponse, HistoryItem, RangeKey, StockAnalysisResponse } from '@/lib/types';
+import type { AssetType, ComparisonItem, DecisionItem, FundAnalysisResponse, HistoryItem, RangeKey, StockAnalysisResponse, TrendLabel } from '@/lib/types';
 
 const VISITOR_ID_STORAGE_KEY = 'fund-analyzer:visitor-id';
 const MAX_HISTORY_ITEMS = 10;
 type AnalysisResponse = FundAnalysisResponse | StockAnalysisResponse;
+type ActivePanel = 'history' | 'tracking' | 'compare' | null;
+type OperationAdviceLabel = '增持' | '持有' | '减持' | '待判断';
+
+interface OperationAdvice {
+  label: OperationAdviceLabel;
+  tone: 'up' | 'hold' | 'down' | 'muted';
+  reason: string;
+}
+
+interface DecisionPrediction {
+  shortTermLabel: TrendLabel;
+  midTermLabel: TrendLabel;
+  shortTermScore: number;
+  midTermScore: number;
+  backtestExcess?: number | null;
+  horizonDays?: number | null;
+  dataDate?: string | null;
+  updatedAt: string;
+  degraded?: boolean;
+}
 
 const RANGE_OPTIONS: Array<{ key: RangeKey; label: string }> = [
   { key: '1m', label: '近一月' },
@@ -34,6 +54,9 @@ function isHistoryItem(value: unknown): value is HistoryItem {
 function isDecisionItem(value: unknown): value is DecisionItem {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<DecisionItem>;
+  const amountValid = item.buyAmount === undefined || item.buyAmount === null || (typeof item.buyAmount === 'number' && Number.isFinite(item.buyAmount));
+  const returnValid =
+    item.manualReturnPct === undefined || item.manualReturnPct === null || (typeof item.manualReturnPct === 'number' && Number.isFinite(item.manualReturnPct));
   return (
     typeof item.id === 'string' &&
     (item.assetType === 'fund' || item.assetType === 'stock') &&
@@ -43,7 +66,25 @@ function isDecisionItem(value: unknown): value is DecisionItem {
     typeof item.buyPrice === 'number' &&
     Number.isFinite(item.buyPrice) &&
     typeof item.buyDate === 'string' &&
+    amountValid &&
+    returnValid &&
     typeof item.createdAt === 'string'
+  );
+}
+
+function isComparisonItem(value: unknown): value is ComparisonItem {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<ComparisonItem>;
+  const returns = item.returns as Record<string, unknown> | undefined;
+  return (
+    typeof item.id === 'string' &&
+    (item.assetType === 'fund' || item.assetType === 'stock') &&
+    typeof item.code === 'string' &&
+    /^\d{6}$/.test(item.code) &&
+    typeof item.name === 'string' &&
+    typeof returns === 'object' &&
+    returns !== null &&
+    typeof item.updatedAt === 'string'
   );
 }
 
@@ -68,6 +109,22 @@ function fmtSignedPct(value?: number | null) {
 function fmtNum(value?: number | null) {
   if (value === null || value === undefined || Number.isNaN(value)) return 'N/A';
   return value.toFixed(4);
+}
+
+function fmtMoney(value?: number | null) {
+  if (value === null || value === undefined || Number.isNaN(value)) return 'N/A';
+  return value.toLocaleString('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    maximumFractionDigits: 0,
+  });
+}
+
+function fmtLargeMoney(value?: number | null) {
+  if (value === null || value === undefined || Number.isNaN(value)) return 'N/A';
+  if (Math.abs(value) >= 100000000) return `${(value / 100000000).toFixed(2)} 亿`;
+  if (Math.abs(value) >= 10000) return `${(value / 10000).toFixed(2)} 万`;
+  return value.toFixed(2);
 }
 
 function fmtIndexPoint(value?: number | null) {
@@ -109,6 +166,128 @@ function signalTypeLabel(signalType: 'shortTerm' | 'midTerm') {
   return signalType === 'shortTerm' ? '短期' : '中期';
 }
 
+function parseOptionalNumber(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildDecisionPrediction(data: AnalysisResponse): DecisionPrediction {
+  const primary = data.backtest?.horizons.find((item) => item.horizonDays === 20) ?? data.backtest?.horizons[0] ?? null;
+  return {
+    shortTermLabel: data.analysis.shortTerm.label,
+    midTermLabel: data.analysis.midTerm.label,
+    shortTermScore: data.analysis.shortTerm.score,
+    midTermScore: data.analysis.midTerm.score,
+    backtestExcess: primary?.averageExcessReturn ?? null,
+    horizonDays: primary?.horizonDays ?? null,
+    dataDate: data.dataDate,
+    updatedAt: new Date().toISOString(),
+    degraded: data.analysis.degraded,
+  };
+}
+
+function getOperationAdvice(returnPct: number | null, buyAmount?: number | null, holdingDays?: number | null, prediction?: DecisionPrediction | null): OperationAdvice {
+  if (!prediction) {
+    return {
+      label: '待判断',
+      tone: 'muted',
+      reason: '请先刷新追踪获取最新趋势预测，再结合金额和收益率生成仓位建议。',
+    };
+  }
+
+  if (prediction.degraded || prediction.shortTermLabel === '无法判断' || prediction.midTermLabel === '无法判断') {
+    return {
+      label: '持有',
+      tone: 'hold',
+      reason: '当前预测数据不足或信号降级，先不建议主动加减仓，等待更完整的数据确认。',
+    };
+  }
+
+  if (returnPct === null || Number.isNaN(returnPct)) {
+    return {
+      label: '待判断',
+      tone: 'muted',
+      reason: '已有趋势预测，但还需要填写当前收益率，才能判断这笔持仓的盈亏风险。',
+    };
+  }
+
+  const amount = buyAmount ?? 0;
+  const days = holdingDays ?? 0;
+  const forecastScore = prediction.shortTermScore * 0.45 + prediction.midTermScore * 0.55;
+  const excess = prediction.backtestExcess ?? 0;
+  const bullish = prediction.midTermLabel === '偏强' && prediction.shortTermLabel !== '偏弱' && excess >= -1;
+  const bearish = prediction.midTermLabel === '偏弱' || (prediction.shortTermLabel === '偏弱' && excess < 0) || forecastScore <= -0.35;
+  const highExposure = amount >= 50000;
+
+  if (bearish && (returnPct <= -3 || highExposure)) {
+    return {
+      label: '减持',
+      tone: 'down',
+      reason: `未来预测偏弱，且当前${returnPct >= 0 ? '已有盈利或仓位较重' : '处于亏损区间'}，建议先降低风险敞口。`,
+    };
+  }
+
+  if (returnPct <= -10 && !bullish) {
+    return {
+      label: '减持',
+      tone: 'down',
+      reason: '回撤较深，同时未来预测没有明显修复信号，建议减持控制单笔亏损。',
+    };
+  }
+
+  if (returnPct >= 18 && !bullish) {
+    return {
+      label: '减持',
+      tone: 'down',
+      reason: '当前已有较高浮盈，但未来预测并未继续偏强，建议分批止盈锁定收益。',
+    };
+  }
+
+  if (bullish && returnPct >= -4 && returnPct <= 10 && !highExposure && days >= 3) {
+    return {
+      label: '增持',
+      tone: 'up',
+      reason: `短中期预测偏强，${prediction.horizonDays ?? 20}日历史验证超额为 ${fmtSignedPct(prediction.backtestExcess)}，可考虑小幅分批增持。`,
+    };
+  }
+
+  if (bullish && returnPct <= -4) {
+    return {
+      label: '持有',
+      tone: 'hold',
+      reason: '未来预测偏强，但当前浮亏较明显，先持有观察，不建议在回撤未企稳前贸然加仓。',
+    };
+  }
+
+  return {
+    label: '持有',
+    tone: 'hold',
+    reason: `未来预测为短期${prediction.shortTermLabel}、中期${prediction.midTermLabel}，未形成明确加仓或减仓条件，建议继续跟踪。`,
+  };
+}
+
+function buildComparisonItem(data: AnalysisResponse, itemAssetType: AssetType): ComparisonItem | null {
+  if (!data.basic) return null;
+  const latestPrice = isStockResult(data) ? data.basic.latestClose ?? null : data.basic.latestNav ?? null;
+  const latestDate = isStockResult(data) ? data.basic.latestDate ?? data.dataDate ?? null : data.basic.latestNavDate ?? data.dataDate ?? null;
+  return {
+    id: `${itemAssetType}-${data.basic.code || data.code}`,
+    assetType: itemAssetType,
+    code: data.basic.code || data.code,
+    name: data.basic.name || data.code,
+    latestPrice,
+    latestDate,
+    returns: data.basic.returns,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function upsertComparisonItem(items: ComparisonItem[], item: ComparisonItem) {
+  return [item, ...items.filter((entry) => entry.id !== item.id)];
+}
+
 export default function HomePage() {
   const [assetType, setAssetType] = useState<AssetType>('fund');
   const [code, setCode] = useState('161725');
@@ -120,6 +299,12 @@ export default function HomePage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
+  const [activePanel, setActivePanel] = useState<ActivePanel>(null);
+  const [comparisonItems, setComparisonItems] = useState<ComparisonItem[]>([]);
+  const [compareAssetType, setCompareAssetType] = useState<AssetType>('fund');
+  const [compareCode, setCompareCode] = useState('');
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [decisionPredictions, setDecisionPredictions] = useState<Record<string, DecisionPrediction>>({});
 
   const currentSeries = useMemo(() => {
     if (!result) return [];
@@ -185,10 +370,12 @@ export default function HomePage() {
         ok?: boolean;
         histories?: unknown;
         decisions?: unknown;
+        comparisons?: unknown;
       };
       if (!res.ok || !json.ok) return;
       setHistory(Array.isArray(json.histories) ? json.histories.filter(isHistoryItem).slice(0, MAX_HISTORY_ITEMS) : []);
       setDecisions(Array.isArray(json.decisions) ? json.decisions.filter(isDecisionItem) : []);
+      setComparisonItems(Array.isArray(json.comparisons) ? json.comparisons.filter(isComparisonItem) : []);
     } catch {
       setError('读取数据库历史记录失败，请稍后重试。');
     }
@@ -222,6 +409,44 @@ export default function HomePage() {
     } catch {
       setError('保存买入追踪更新失败，请稍后重试。');
     }
+  }
+
+  function updateDecisionDraft(id: string, patch: Partial<Pick<DecisionItem, 'buyAmount' | 'manualReturnPct'>>) {
+    setDecisions((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              ...patch,
+              updatedAt: new Date().toISOString(),
+            }
+          : item
+      )
+    );
+  }
+
+  function saveDecisionAssessment(id: string) {
+    const target = decisions.find((item) => item.id === id);
+    if (!target) return;
+    void persistDecisionUpdates(
+      decisions.map((item) =>
+        item.id === id
+          ? {
+              ...target,
+              updatedAt: new Date().toISOString(),
+            }
+          : item
+      )
+    );
+  }
+
+  function persistComparisonItem(item: ComparisonItem) {
+    if (!visitorId) return;
+    void fetch('/api/user-data/comparison', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitorId, item }),
+    }).catch(() => setError('保存收益对比失败，请稍后重试。'));
   }
 
   function recordFundHistory(data: AnalysisResponse, nextAssetType: AssetType) {
@@ -281,6 +506,7 @@ export default function HomePage() {
     };
 
     setDecisions([item, ...decisions]);
+    setDecisionPredictions((prev) => ({ ...prev, [item.id]: buildDecisionPrediction(result) }));
     if (visitorId) {
       void fetch('/api/user-data/decision', {
         method: 'POST',
@@ -301,21 +527,31 @@ export default function HomePage() {
           try {
             const res = await fetch(`/api/${item.assetType}/${item.code}`);
             const json = (await res.json()) as AnalysisResponse & { message?: string };
-            if (!res.ok || !json.ok || !json.basic) return item;
+            if (!res.ok || !json.ok || !json.basic) return { item };
             return {
-              ...item,
-              name: json.basic.name || item.name,
-              currentPrice: isStockResult(json) ? json.basic.latestClose ?? item.currentPrice ?? null : json.basic.latestNav ?? item.currentPrice ?? null,
-              currentDate: isStockResult(json) ? json.basic.latestDate ?? json.dataDate ?? item.currentDate ?? null : json.basic.latestNavDate ?? json.dataDate ?? item.currentDate ?? null,
-              updatedAt: new Date().toISOString(),
+              item: {
+                ...item,
+                name: json.basic.name || item.name,
+                currentPrice: isStockResult(json) ? json.basic.latestClose ?? item.currentPrice ?? null : json.basic.latestNav ?? item.currentPrice ?? null,
+                currentDate: isStockResult(json) ? json.basic.latestDate ?? json.dataDate ?? item.currentDate ?? null : json.basic.latestNavDate ?? json.dataDate ?? item.currentDate ?? null,
+                updatedAt: new Date().toISOString(),
+              },
+              prediction: buildDecisionPrediction(json),
             };
           } catch {
-            return item;
+            return { item };
           }
         })
       );
 
-      const refreshedById = new Map(refreshed.map((item) => [item.id, item]));
+      const refreshedById = new Map(refreshed.map(({ item }) => [item.id, item]));
+      setDecisionPredictions((prev) => {
+        const next = { ...prev };
+        for (const entry of refreshed) {
+          if (entry.prediction) next[entry.item.id] = entry.prediction;
+        }
+        return next;
+      });
       await persistDecisionUpdates(decisions.map((item) => refreshedById.get(item.id) ?? item));
     } finally {
       setTrackingLoading(false);
@@ -327,12 +563,104 @@ export default function HomePage() {
     if (!target) return;
     if (!window.confirm(`确定移除 ${target.name} 的买入追踪记录吗？这会删除本地保存的这条记录。`)) return;
     setDecisions(decisions.filter((item) => item.id !== id));
+    setDecisionPredictions((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     if (!visitorId) return;
     try {
       await fetch(`/api/user-data/decision/${encodeURIComponent(id)}?visitorId=${encodeURIComponent(visitorId)}`, { method: 'DELETE' });
     } catch {
       setError('删除买入追踪失败，请稍后重试。');
     }
+  }
+
+  async function fetchComparisonItem(targetCode: string, targetAssetType: AssetType) {
+    const res = await fetch(`/api/${targetAssetType}/${targetCode}`);
+    const json = (await res.json()) as AnalysisResponse & { message?: string };
+    if (!res.ok || !json.ok) {
+      throw new Error(json.message || '获取收益对比数据失败');
+    }
+    const item = buildComparisonItem(json, targetAssetType);
+    if (!item) throw new Error('当前标的缺少基础收益数据，无法加入对比。');
+    return item;
+  }
+
+  function addComparisonFromResult() {
+    if (!result) {
+      setError('请先完成一次有效查询，再加入收益对比。');
+      return;
+    }
+    const nextAssetType: AssetType = isStockResult(result) ? 'stock' : 'fund';
+    const item = buildComparisonItem(result, nextAssetType);
+    if (!item) {
+      setError('当前标的缺少基础收益数据，无法加入对比。');
+      return;
+    }
+    setComparisonItems((prev) => upsertComparisonItem(prev, item));
+    persistComparisonItem(item);
+    setCompareAssetType(nextAssetType);
+    setCompareCode('');
+    setActivePanel('compare');
+    setError(null);
+  }
+
+  async function addComparisonByCode() {
+    const normalizedCode = compareCode.trim();
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      setError(`${assetLabel(compareAssetType)}代码格式无效，请输入 6 位数字代码。`);
+      return;
+    }
+
+    setCompareLoading(true);
+    setError(null);
+    try {
+      const item = await fetchComparisonItem(normalizedCode, compareAssetType);
+      setComparisonItems((prev) => upsertComparisonItem(prev, item));
+      persistComparisonItem(item);
+      setCompareCode('');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '获取收益对比数据失败';
+      setError(msg);
+    } finally {
+      setCompareLoading(false);
+    }
+  }
+
+  async function refreshComparisonItems() {
+    if (!comparisonItems.length) return;
+    setCompareLoading(true);
+    setError(null);
+    try {
+      const refreshed = await Promise.all(
+        comparisonItems.map(async (item) => {
+          try {
+            return await fetchComparisonItem(item.code, item.assetType);
+          } catch {
+            return item;
+          }
+        })
+      );
+      setComparisonItems(refreshed);
+      if (visitorId) {
+        await fetch('/api/user-data/comparison', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ visitorId, items: refreshed }),
+        });
+      }
+    } finally {
+      setCompareLoading(false);
+    }
+  }
+
+  function removeComparisonItem(id: string) {
+    setComparisonItems((prev) => prev.filter((item) => item.id !== id));
+    if (!visitorId) return;
+    void fetch(`/api/user-data/comparison/${encodeURIComponent(id)}?visitorId=${encodeURIComponent(visitorId)}`, { method: 'DELETE' }).catch(() =>
+      setError('删除收益对比失败，请稍后重试。')
+    );
   }
 
   async function queryAsset(targetCode?: string, targetAssetType: AssetType = assetType) {
@@ -365,6 +693,24 @@ export default function HomePage() {
 
   return (
     <main className="container">
+      <header className="topToolbar">
+        <div className="toolbarBrand">趋势分析台</div>
+        <div className="toolbarActions">
+          <button className="toolbarButton" onClick={() => setActivePanel('history')} type="button">
+            历史查询
+            <span>{history.length}</span>
+          </button>
+          <button className="toolbarButton" onClick={() => setActivePanel('tracking')} type="button">
+            买入追踪
+            <span>{decisions.length}</span>
+          </button>
+          <button className="toolbarButton" onClick={() => setActivePanel('compare')} type="button">
+            收益对比
+            <span>{comparisonItems.length}</span>
+          </button>
+        </div>
+      </header>
+
       <section className="commandDeck">
         <div className="hero">
           <div className="eyebrow">Market Research Workbench</div>
@@ -437,111 +783,301 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="card historyCard">
-        <div className="moduleHeader">
-          <div>
-            <div className="sectionTitle">历史查询</div>
-            <div className="small">自动记录当前浏览器最近查看的基金和股票，最多保留 {MAX_HISTORY_ITEMS} 条。</div>
-          </div>
-          {history.length ? (
-            <button className="ghostButton" onClick={clearHistory} type="button">
-              清空历史
-            </button>
-          ) : null}
+      {activePanel ? (
+        <div className="overlay" role="dialog" aria-modal="true">
+          <button className="overlayBackdrop" onClick={() => setActivePanel(null)} type="button" aria-label="关闭面板" />
+          <aside className="floatingPanel">
+            {activePanel === 'history' ? (
+              <>
+                <div className="panelHeader">
+                  <div>
+                    <div className="sectionTitle">历史查询</div>
+                    <div className="small">自动记录当前浏览器最近查看的基金和股票，最多保留 {MAX_HISTORY_ITEMS} 条。</div>
+                  </div>
+                  <div className="panelActions">
+                    {history.length ? (
+                      <button className="ghostButton" onClick={clearHistory} type="button">
+                        清空历史
+                      </button>
+                    ) : null}
+                    <button className="ghostButton" onClick={() => setActivePanel(null)} type="button">
+                      关闭
+                    </button>
+                  </div>
+                </div>
+
+                {history.length ? (
+                  <div className="historyList panelList">
+                    {history.map((item) => (
+                      <button
+                        className="historyItem"
+                        disabled={loading}
+                        key={`${item.assetType ?? 'fund'}-${item.code}`}
+                        onClick={() => {
+                          setActivePanel(null);
+                          void queryAsset(item.code, item.assetType ?? 'fund');
+                        }}
+                        type="button"
+                      >
+                        <span className="historyMain">
+                          <span className="historyName">{item.name}</span>
+                          <span className="historyCode">{assetLabel(item.assetType ?? 'fund')} · {item.code}</span>
+                        </span>
+                        <span className="historyMeta">
+                          <span>{(item.assetType ?? 'fund') === 'fund' ? '净值' : '收盘'} {fmtNum(item.latestNav)}</span>
+                          <span>{item.latestNavDate ?? '日期 N/A'}</span>
+                          <span>{fmtDateTime(item.viewedAt)} 查看</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="emptyState">暂无历史记录。查询成功后，会在这里沉淀你查看过的基金。</div>
+                )}
+              </>
+            ) : activePanel === 'tracking' ? (
+              <>
+                <div className="panelHeader">
+                  <div>
+                    <div className="sectionTitle">买入决策追踪</div>
+                    <div className="small">录入购买金额和当前收益率，刷新未来趋势预测后，综合生成持有、增持或减持建议。</div>
+                  </div>
+                  <div className="panelActions">
+                    {decisions.length ? (
+                      <button className="ghostButton" onClick={() => refreshDecisionPrices()} disabled={trackingLoading} type="button">
+                        {trackingLoading ? '刷新中...' : '刷新追踪'}
+                      </button>
+                    ) : null}
+                    <button className="ghostButton" onClick={() => setActivePanel(null)} type="button">
+                      关闭
+                    </button>
+                  </div>
+                </div>
+
+                {decisions.length ? (
+                  <div className="decisionList panelList">
+                    {decisions.map((item) => {
+                      const latestPrice = item.currentPrice ?? item.buyPrice;
+                      const changePct = item.buyPrice ? ((latestPrice - item.buyPrice) / item.buyPrice) * 100 : null;
+                      const effectiveReturnPct = item.manualReturnPct ?? changePct;
+                      const holdingDays = daysBetween(item.buyDate, item.currentDate);
+                      const currentResultAssetType = result ? (isStockResult(result) ? 'stock' : 'fund') : null;
+                      const currentPrediction =
+                        result?.basic && result.basic.code === item.code && currentResultAssetType === item.assetType ? buildDecisionPrediction(result) : null;
+                      const prediction = decisionPredictions[item.id] ?? currentPrediction;
+                      const advice = getOperationAdvice(effectiveReturnPct, item.buyAmount, holdingDays, prediction);
+                      const status = effectiveReturnPct === null ? '未知' : effectiveReturnPct >= 0 ? '盈利' : '亏损';
+                      return (
+                        <article className="decisionItem" key={item.id}>
+                          <div className="decisionHead">
+                            <div>
+                              <span className="historyCode">{assetLabel(item.assetType)} · {item.code}</span>
+                              <h3>{item.name}</h3>
+                            </div>
+                            <span className={`decisionStatus ${changePct !== null && changePct >= 0 ? 'up' : 'down'}`}>{status}</span>
+                          </div>
+                          <div className="decisionMetrics">
+                            <div>
+                              <span>买入价格</span>
+                              <strong>{fmtNum(item.buyPrice)}</strong>
+                              <small>{fmtDate(item.buyDate)}</small>
+                            </div>
+                            <div>
+                              <span>当前价格</span>
+                              <strong>{fmtNum(latestPrice)}</strong>
+                              <small>{fmtDate(item.currentDate)}</small>
+                            </div>
+                            <div>
+                              <span>累计涨跌</span>
+                              <strong>{fmtSignedPct(effectiveReturnPct)}</strong>
+                              <small>{item.manualReturnPct === null || item.manualReturnPct === undefined ? '按当前价格估算' : '用户手动录入'}</small>
+                            </div>
+                          </div>
+                          <div className="decisionInputs">
+                            <label className="miniField">
+                              <span>购买金额</span>
+                              <input
+                                className="miniInput"
+                                inputMode="decimal"
+                                min="0"
+                                type="number"
+                                value={item.buyAmount ?? ''}
+                                onChange={(e) => updateDecisionDraft(item.id, { buyAmount: parseOptionalNumber(e.target.value) })}
+                                placeholder="例如 20000"
+                              />
+                            </label>
+                            <label className="miniField">
+                              <span>当前收益率 %</span>
+                              <input
+                                className="miniInput"
+                                inputMode="decimal"
+                                type="number"
+                                value={item.manualReturnPct ?? ''}
+                                onChange={(e) => updateDecisionDraft(item.id, { manualReturnPct: parseOptionalNumber(e.target.value) })}
+                                placeholder={changePct === null ? '例如 3.5' : changePct.toFixed(2)}
+                              />
+                            </label>
+                            <button className="ghostButton" onClick={() => saveDecisionAssessment(item.id)} type="button">
+                              保存
+                            </button>
+                          </div>
+                          <div className={`decisionAdvice ${advice.tone}`}>
+                            <div className="adviceHead">
+                              <span className={`adviceBadge ${advice.tone}`}>{advice.label}</span>
+                              <small>{holdingDays === null ? '持有天数 N/A' : `持有 ${holdingDays} 天`} · {fmtMoney(item.buyAmount)}</small>
+                            </div>
+                            <p>{advice.reason}</p>
+                            {prediction ? (
+                              <small>
+                                预测依据：短期{prediction.shortTermLabel}，中期{prediction.midTermLabel}
+                                {prediction.horizonDays ? `，${prediction.horizonDays}日历史超额 ${fmtSignedPct(prediction.backtestExcess)}` : ''}。
+                              </small>
+                            ) : (
+                              <small>点击“刷新”获取未来趋势预测和历史验证结果。</small>
+                            )}
+                          </div>
+                          <div className="decisionActions">
+                            <button
+                              className="ghostButton"
+                              onClick={() => {
+                                setActivePanel(null);
+                                void queryAsset(item.code, item.assetType);
+                              }}
+                              type="button"
+                            >
+                              查看分析
+                            </button>
+                            <button className="ghostButton" onClick={() => refreshDecisionPrices([item])} disabled={trackingLoading} type="button">
+                              刷新
+                            </button>
+                            <button className="ghostButton dangerButton" onClick={() => removeDecision(item.id)} type="button">
+                              移除
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="emptyState">暂无买入追踪。查询某只基金或股票后，点击“记录买入决策”即可开始跟踪。</div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="panelHeader">
+                  <div>
+                    <div className="sectionTitle">基金 / 股票收益对比</div>
+                    <div className="small">把多个基金或 A 股放到同一张表里，横向比较阶段收益和最新价格。</div>
+                  </div>
+                  <div className="panelActions">
+                    {comparisonItems.length ? (
+                      <button className="ghostButton" onClick={refreshComparisonItems} disabled={compareLoading} type="button">
+                        {compareLoading ? '刷新中...' : '刷新对比'}
+                      </button>
+                    ) : null}
+                    <button className="ghostButton" onClick={() => setActivePanel(null)} type="button">
+                      关闭
+                    </button>
+                  </div>
+                </div>
+
+                <div className="compareForm">
+                  <div className="assetSwitch compactSwitch" aria-label="对比资产类型">
+                    <button
+                      className={compareAssetType === 'fund' ? 'active' : ''}
+                      onClick={() => setCompareAssetType('fund')}
+                      type="button"
+                    >
+                      基金
+                    </button>
+                    <button
+                      className={compareAssetType === 'stock' ? 'active' : ''}
+                      onClick={() => setCompareAssetType('stock')}
+                      type="button"
+                    >
+                      A 股
+                    </button>
+                  </div>
+                  <input
+                    className="input compareInput"
+                    value={compareCode}
+                    onChange={(e) => setCompareCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && compareCode.length === 6 && !compareLoading) {
+                        void addComparisonByCode();
+                      }
+                    }}
+                    placeholder={compareAssetType === 'fund' ? '输入基金代码，例如 161725' : '输入股票代码，例如 600519'}
+                  />
+                  <button className="button compareAddButton" onClick={addComparisonByCode} disabled={compareLoading || compareCode.length !== 6} type="button">
+                    {compareLoading ? '添加中...' : '加入对比'}
+                  </button>
+                </div>
+
+                {comparisonItems.length ? (
+                  <div className="compareTableWrap">
+                    <table className="compareTable">
+                      <thead>
+                        <tr>
+                          <th>标的</th>
+                          <th>类型</th>
+                          <th>最新价</th>
+                          <th>日期</th>
+                          <th>近一日</th>
+                          <th>近一周</th>
+                          <th>近一月</th>
+                          <th>近三月</th>
+                          <th>近六月</th>
+                          <th>近一年</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comparisonItems.map((item) => (
+                          <tr key={item.id}>
+                            <td>
+                              <strong>{item.name}</strong>
+                              <span className="inlineMeta">{item.code}</span>
+                            </td>
+                            <td>{assetLabel(item.assetType)}</td>
+                            <td>{fmtNum(item.latestPrice)}</td>
+                            <td>{item.latestDate ?? 'N/A'}</td>
+                            <td className={(item.returns.day1 ?? 0) >= 0 ? 'returnUp' : 'returnDown'}>{fmtSignedPct(item.returns.day1)}</td>
+                            <td className={(item.returns.week1 ?? 0) >= 0 ? 'returnUp' : 'returnDown'}>{fmtSignedPct(item.returns.week1)}</td>
+                            <td className={(item.returns.month1 ?? 0) >= 0 ? 'returnUp' : 'returnDown'}>{fmtSignedPct(item.returns.month1)}</td>
+                            <td className={(item.returns.month3 ?? 0) >= 0 ? 'returnUp' : 'returnDown'}>{fmtSignedPct(item.returns.month3)}</td>
+                            <td className={(item.returns.month6 ?? 0) >= 0 ? 'returnUp' : 'returnDown'}>{fmtSignedPct(item.returns.month6)}</td>
+                            <td className={(item.returns.year1 ?? 0) >= 0 ? 'returnUp' : 'returnDown'}>{fmtSignedPct(item.returns.year1)}</td>
+                            <td>
+                              <div className="tableActions">
+                                <button
+                                  className="ghostButton"
+                                  onClick={() => {
+                                    setActivePanel(null);
+                                    void queryAsset(item.code, item.assetType);
+                                  }}
+                                  type="button"
+                                >
+                                  查看
+                                </button>
+                                <button className="ghostButton dangerButton" onClick={() => removeComparisonItem(item.id)} type="button">
+                                  移除
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="emptyState">暂无收益对比。查询结果页可点击“加入收益对比”，也可以在这里直接输入基金或股票代码添加。</div>
+                )}
+              </>
+            )}
+          </aside>
         </div>
-
-        {history.length ? (
-          <div className="historyList">
-            {history.map((item) => (
-              <button
-                className="historyItem"
-                disabled={loading}
-                key={`${item.assetType ?? 'fund'}-${item.code}`}
-                onClick={() => queryAsset(item.code, item.assetType ?? 'fund')}
-                type="button"
-              >
-                <span className="historyMain">
-                  <span className="historyName">{item.name}</span>
-                  <span className="historyCode">{assetLabel(item.assetType ?? 'fund')} · {item.code}</span>
-                </span>
-                <span className="historyMeta">
-                  <span>{(item.assetType ?? 'fund') === 'fund' ? '净值' : '收盘'} {fmtNum(item.latestNav)}</span>
-                  <span>{item.latestNavDate ?? '日期 N/A'}</span>
-                  <span>{fmtDateTime(item.viewedAt)} 查看</span>
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="emptyState">暂无历史记录。查询成功后，会在这里沉淀你查看过的基金。</div>
-        )}
-      </section>
-
-      <section className="card trackingCard">
-        <div className="moduleHeader">
-          <div>
-            <div className="sectionTitle">买入决策追踪</div>
-            <div className="small">记录某次买入时点，后续刷新当前价格，观察这笔决策到现在是涨是跌。</div>
-          </div>
-          {decisions.length ? (
-            <button className="ghostButton" onClick={() => refreshDecisionPrices()} disabled={trackingLoading} type="button">
-              {trackingLoading ? '刷新中...' : '刷新追踪'}
-            </button>
-          ) : null}
-        </div>
-
-        {decisions.length ? (
-          <div className="decisionList">
-            {decisions.map((item) => {
-              const latestPrice = item.currentPrice ?? item.buyPrice;
-              const changePct = item.buyPrice ? ((latestPrice - item.buyPrice) / item.buyPrice) * 100 : null;
-              const holdingDays = daysBetween(item.buyDate, item.currentDate);
-              const status = changePct === null ? '未知' : changePct >= 0 ? '盈利' : '亏损';
-              return (
-                <article className="decisionItem" key={item.id}>
-                  <div className="decisionHead">
-                    <div>
-                      <span className="historyCode">{assetLabel(item.assetType)} · {item.code}</span>
-                      <h3>{item.name}</h3>
-                    </div>
-                    <span className={`decisionStatus ${changePct !== null && changePct >= 0 ? 'up' : 'down'}`}>{status}</span>
-                  </div>
-                  <div className="decisionMetrics">
-                    <div>
-                      <span>买入价格</span>
-                      <strong>{fmtNum(item.buyPrice)}</strong>
-                      <small>{fmtDate(item.buyDate)}</small>
-                    </div>
-                    <div>
-                      <span>当前价格</span>
-                      <strong>{fmtNum(latestPrice)}</strong>
-                      <small>{fmtDate(item.currentDate)}</small>
-                    </div>
-                    <div>
-                      <span>累计涨跌</span>
-                      <strong>{fmtSignedPct(changePct)}</strong>
-                      <small>{holdingDays === null ? '持有天数 N/A' : `持有 ${holdingDays} 天`}</small>
-                    </div>
-                  </div>
-                  <div className="decisionActions">
-                    <button className="ghostButton" onClick={() => queryAsset(item.code, item.assetType)} type="button">
-                      查看分析
-                    </button>
-                    <button className="ghostButton" onClick={() => refreshDecisionPrices([item])} disabled={trackingLoading} type="button">
-                      刷新
-                    </button>
-                    <button className="ghostButton dangerButton" onClick={() => removeDecision(item.id)} type="button">
-                      移除
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="emptyState">暂无买入追踪。查询某只基金或股票后，点击“记录买入决策”即可开始跟踪。</div>
-        )}
-      </section>
+      ) : null}
 
       {error ? (
         <div style={{ marginTop: 16 }} className="error">
@@ -581,9 +1117,14 @@ export default function HomePage() {
                 <strong>{fmtSignedPct(primaryBacktest?.averageExcessReturn)}</strong>
               </div>
             </div>
-            <button className="trackerAction" onClick={addBuyDecision} type="button">
-              记录买入决策
-            </button>
+            <div className="resultActions">
+              <button className="trackerAction" onClick={addBuyDecision} type="button">
+                记录买入决策
+              </button>
+              <button className="trackerAction secondaryAction" onClick={addComparisonFromResult} type="button">
+                加入收益对比
+              </button>
+            </div>
           </section>
 
           <div className="grid">
@@ -603,6 +1144,7 @@ export default function HomePage() {
 
             <section className="card span-4">
               <div className="sectionTitle">阶段收益</div>
+              <div className="small returnNote">按当前交易日回推自然区间，并取回推日之前最近可用交易日计算。</div>
               <div className="kvGrid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
                 <div className="kvItem"><div className="kvLabel">近一日</div><div className="kvValue">{fmtPct(result.basic?.returns.day1)}</div></div>
                 <div className="kvItem"><div className="kvLabel">近一周</div><div className="kvValue">{fmtPct(result.basic?.returns.week1)}</div></div>
@@ -654,6 +1196,86 @@ export default function HomePage() {
                 ) : null}
               </div>
             </section>
+
+            {!isStockResult(result) && result.holdingAnalysis ? (
+              <section className="card span-12">
+                <div className="moduleHeader">
+                  <div>
+                    <div className="sectionTitle">重仓公司多维判断</div>
+                    <div className="small">
+                      基于最近披露的前十大重仓股，从持仓占比、估值、行业概念、政策敏感度和公司规模进行辅助判断。
+                    </div>
+                  </div>
+                  <TrendTag label={result.holdingAnalysis.overallLabel === '中性' ? '震荡' : result.holdingAnalysis.overallLabel} />
+                </div>
+                <div className="holdingSummary">
+                  <div>
+                    <span>基金结构</span>
+                    <strong>{result.holdingAnalysis.structureType}</strong>
+                  </div>
+                  <div>
+                    <span>持仓口径</span>
+                    <strong>{result.holdingAnalysis.holdingScope}</strong>
+                  </div>
+                  <div>
+                    <span>报告期</span>
+                    <strong>{result.holdingAnalysis.reportDate ?? 'N/A'}</strong>
+                  </div>
+                  <div>
+                    <span>前十大占比</span>
+                    <strong>{fmtPct(result.holdingAnalysis.topHoldingWeight)}</strong>
+                  </div>
+                  <div>
+                    <span>集中度</span>
+                    <strong>{result.holdingAnalysis.concentrationLabel}</strong>
+                  </div>
+                </div>
+                <div className="notice holdingNotice">{result.holdingAnalysis.summary}</div>
+                {result.holdingAnalysis.holdings.length ? (
+                  <div className="holdingTableWrap">
+                    <table className="holdingTable">
+                      <thead>
+                        <tr>
+                          <th>重仓公司</th>
+                          <th>占净值</th>
+                          <th>行业</th>
+                          <th>PE</th>
+                          <th>PB</th>
+                          <th>估值</th>
+                          <th>政策敏感</th>
+                          <th>判断</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.holdingAnalysis.holdings.map((item) => (
+                          <tr key={`${item.secid ?? item.code}-${item.name}`}>
+                            <td>
+                              <strong>{item.name}</strong>
+                              <span className="inlineMeta">{item.code} · 市值 {fmtLargeMoney(item.marketCap)}</span>
+                            </td>
+                            <td>{fmtPct(item.weightPct)}</td>
+                            <td>
+                              {item.industry ?? 'N/A'}
+                              {item.concepts?.length ? <span className="conceptLine">{item.concepts.slice(0, 3).join(' / ')}</span> : null}
+                            </td>
+                            <td>{fmtIndexPoint(item.pe)}</td>
+                            <td>{fmtIndexPoint(item.pb)}</td>
+                            <td>{item.valuationLabel}</td>
+                            <td>{item.policySensitivity}</td>
+                            <td>{item.comment}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="emptyState">当前未获取到可用重仓明细。若这是 ETF 或 ETF 联接基金，请优先查看目标 ETF、指数成分股或基金公告。</div>
+                )}
+                <ul className="list holdingRisks">
+                  {result.holdingAnalysis.risks.map((item, idx) => <li key={idx}>{item}</li>)}
+                </ul>
+              </section>
+            ) : null}
 
             <section className="card span-12">
               <div className="moduleHeader">

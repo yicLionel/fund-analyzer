@@ -6,6 +6,10 @@ function validVisitorId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{12,80}$/.test(value);
 }
 
+function validOptionalNumber(value: unknown) {
+  return value === undefined || value === null || (typeof value === 'number' && Number.isFinite(value));
+}
+
 function validDecisionItem(value: unknown): value is DecisionItem {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<DecisionItem>;
@@ -18,6 +22,8 @@ function validDecisionItem(value: unknown): value is DecisionItem {
     typeof item.buyPrice === 'number' &&
     Number.isFinite(item.buyPrice) &&
     typeof item.buyDate === 'string' &&
+    validOptionalNumber(item.buyAmount) &&
+    validOptionalNumber(item.manualReturnPct) &&
     typeof item.createdAt === 'string'
   );
 }

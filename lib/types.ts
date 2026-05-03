@@ -94,6 +94,39 @@ export interface HistoryItem {
   viewedAt: string;
 }
 
+export interface HoldingStockInsight {
+  code: string;
+  name: string;
+  secid?: string | null;
+  weightPct?: number | null;
+  marketValue?: number | null;
+  shares?: number | null;
+  latestPrice?: number | null;
+  changePct?: number | null;
+  pe?: number | null;
+  pb?: number | null;
+  marketCap?: number | null;
+  industry?: string | null;
+  concepts?: string[];
+  valuationLabel: '偏低' | '合理' | '偏高' | '待判断';
+  qualityLabel: '较强' | '中性' | '偏弱' | '待判断';
+  policySensitivity: '高' | '中' | '低' | '待判断';
+  comment: string;
+}
+
+export interface FundHoldingAnalysis {
+  reportDate?: string | null;
+  structureType: '普通基金' | 'ETF' | 'ETF联接' | 'QDII' | 'QDII/ETF联接' | 'LOF' | '待判断';
+  holdingScope: '基金直接重仓' | '指数成分参考' | '目标ETF/指数穿透参考' | '海外持仓披露参考' | '披露不足';
+  disclosureNote: string;
+  topHoldingWeight?: number | null;
+  concentrationLabel: '集中' | '适中' | '分散' | '待判断';
+  overallLabel: '偏强' | '中性' | '偏弱' | '待判断';
+  summary: string;
+  risks: string[];
+  holdings: HoldingStockInsight[];
+}
+
 export interface DecisionItem {
   id: string;
   assetType: AssetType;
@@ -101,10 +134,23 @@ export interface DecisionItem {
   name: string;
   buyPrice: number;
   buyDate: string;
+  buyAmount?: number | null;
+  manualReturnPct?: number | null;
   currentPrice?: number | null;
   currentDate?: string | null;
   createdAt: string;
   updatedAt?: string | null;
+}
+
+export interface ComparisonItem {
+  id: string;
+  assetType: AssetType;
+  code: string;
+  name: string;
+  latestPrice?: number | null;
+  latestDate?: string | null;
+  returns: ReturnStats;
+  updatedAt: string;
 }
 
 export interface BacktestHorizonResult {
@@ -143,6 +189,7 @@ export interface FundAnalysisResponse {
   updatedAt: string;
   basedOnRecentAvailableData: boolean;
   basic: FundBasicInfo | null;
+  holdingAnalysis?: FundHoldingAnalysis | null;
   series: Record<RangeKey, NavPoint[]>;
   compareIndex: IndexSnapshot[];
   primaryBenchmark?: IndexSnapshot | null;

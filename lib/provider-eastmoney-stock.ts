@@ -1,5 +1,6 @@
 import { buildAnalysis } from './analysis';
 import { buildBacktest } from './backtest';
+import { buildCalendarReturnStats } from './returns';
 import type {
   BenchmarkSeries,
   IndexSnapshot,
@@ -119,27 +120,6 @@ async function getKlineSeries(secid: string, begin = '19900101', end = '20500101
   url.searchParams.set('end', end);
 
   return JSON.parse(await fetchText(url.toString())) as EastmoneyKlineResponse;
-}
-
-function buildReturnStats(series: NavPoint[]) {
-  const latest = series.at(-1)?.nav;
-  if (!latest) {
-    return { day1: null, week1: null, month1: null, month3: null, month6: null, year1: null };
-  }
-  const pick = (offset: number) => {
-    const idx = series.length - 1 - offset;
-    if (idx < 0) return null;
-    const base = series[idx].nav;
-    return base ? pct(latest, base) : null;
-  };
-  return {
-    day1: pick(1),
-    week1: pick(5),
-    month1: pick(21),
-    month3: pick(63),
-    month6: pick(126),
-    year1: pick(252),
-  };
 }
 
 function sliceSeriesByDays(series: NavPoint[], days: number): NavPoint[] {
@@ -275,7 +255,7 @@ export async function fetchStockAnalysis(code: string): Promise<StockAnalysisRes
       latestDate: latest?.date ?? null,
       latestVolume: latest?.volume ?? null,
       latestAmount: latest?.amount ?? null,
-      returns: buildReturnStats(fullSeries),
+      returns: buildCalendarReturnStats(fullSeries),
     };
 
     const rawSeriesMap = {

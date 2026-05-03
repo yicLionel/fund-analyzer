@@ -39,7 +39,108 @@ a { color: inherit; }
 .container {
   max-width: 1360px;
   margin: 0 auto;
-  padding: 28px 22px 64px;
+  padding: 82px 22px 64px;
+}
+
+.topToolbar {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  width: min(1360px, calc(100% - 44px));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(10, 14, 18, 0.86);
+  box-shadow: 0 14px 34px rgba(0,0,0,0.28);
+  backdrop-filter: blur(16px);
+  padding: 10px 12px;
+}
+
+.toolbarBrand {
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.toolbarActions {
+  display: flex;
+  gap: 8px;
+}
+
+.toolbarButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 900;
+  padding: 8px 12px;
+}
+
+.toolbarButton span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #2563eb 0%, #dc2626 100%);
+  color: #fff;
+  font-size: 12px;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.overlayBackdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(0,0,0,0.56);
+  cursor: pointer;
+}
+
+.floatingPanel {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  bottom: 18px;
+  width: min(720px, calc(100% - 36px));
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(17, 25, 35, 0.96);
+  box-shadow: 0 26px 70px rgba(0,0,0,0.48);
+  backdrop-filter: blur(18px);
+  padding: 18px;
+}
+
+.panelHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.panelActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.panelList {
+  grid-template-columns: 1fr;
 }
 
 .commandDeck,
@@ -363,6 +464,10 @@ a { color: inherit; }
   gap: 12px;
 }
 
+.floatingPanel .decisionList {
+  grid-template-columns: 1fr;
+}
+
 .decisionItem {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -433,6 +538,198 @@ a { color: inherit; }
   flex-wrap: wrap;
 }
 
+.decisionInputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.miniField {
+  display: grid;
+  gap: 6px;
+}
+
+.miniField span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.miniInput {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #071017;
+  color: var(--text);
+  font-weight: 800;
+  outline: none;
+  padding: 0 10px;
+}
+
+.miniInput:focus {
+  border-color: rgba(37, 99, 235, 0.72);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.decisionAdvice {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.14);
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.decisionAdvice.up {
+  border-color: rgba(239, 68, 68, 0.36);
+  background: rgba(239, 68, 68, 0.09);
+}
+
+.decisionAdvice.down {
+  border-color: rgba(37, 99, 235, 0.4);
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.decisionAdvice.hold {
+  border-color: rgba(234, 179, 8, 0.34);
+  background: rgba(234, 179, 8, 0.08);
+}
+
+.decisionAdvice.muted {
+  background: rgba(255,255,255,0.03);
+}
+
+.adviceHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.adviceBadge {
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+}
+
+.adviceBadge.up {
+  background: #dc2626;
+}
+
+.adviceBadge.down {
+  background: #2563eb;
+}
+
+.adviceBadge.hold {
+  background: #ca8a04;
+}
+
+.adviceBadge.muted {
+  background: #475569;
+}
+
+.decisionAdvice p {
+  margin: 10px 0 6px;
+  line-height: 1.65;
+}
+
+.decisionAdvice small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.compareForm {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(120deg, rgba(37, 99, 235, 0.12), transparent 44%),
+    rgba(255,255,255,0.035);
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.compactSwitch {
+  margin-bottom: 0;
+}
+
+.compareInput {
+  height: 46px;
+  font-size: 16px;
+}
+
+.compareAddButton {
+  height: 46px;
+}
+
+.compareTableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.12);
+}
+
+.compareTable {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+}
+
+.compareTable th,
+.compareTable td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.compareTable th {
+  background: rgba(255,255,255,0.04);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.compareTable td {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.compareTable tr:last-child td {
+  border-bottom: 0;
+}
+
+.compareTable strong {
+  display: block;
+  max-width: 210px;
+  overflow-wrap: anywhere;
+}
+
+.tableActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.returnUp {
+  color: #fecaca;
+  font-weight: 900;
+}
+
+.returnDown {
+  color: #bfdbfe;
+  font-weight: 900;
+}
+
 .resultHeader {
   display: flex;
   justify-content: space-between;
@@ -441,6 +738,13 @@ a { color: inherit; }
   margin-top: 18px;
   border-radius: 8px;
   padding: 18px;
+}
+
+.resultActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .trackerAction {
@@ -457,6 +761,16 @@ a { color: inherit; }
 
 .trackerAction:hover {
   background: rgba(239, 68, 68, 0.18);
+}
+
+.secondaryAction {
+  border-color: rgba(37, 99, 235, 0.48);
+  background: rgba(37, 99, 235, 0.13);
+  color: #bfdbfe;
+}
+
+.secondaryAction:hover {
+  background: rgba(37, 99, 235, 0.2);
 }
 
 .resultHeader h2 {
@@ -529,6 +843,10 @@ a { color: inherit; }
   line-height: 1.6;
 }
 
+.returnNote {
+  margin: -6px 0 12px;
+}
+
 .pillRow {
   display: flex;
   gap: 8px;
@@ -593,6 +911,88 @@ a { color: inherit; }
   overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+.holdingSummary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.holdingSummary div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.035);
+  padding: 12px;
+}
+
+.holdingSummary span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.holdingSummary strong {
+  font-size: 20px;
+}
+
+.holdingNotice {
+  margin-bottom: 12px;
+}
+
+.holdingTableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.holdingTable {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+}
+
+.holdingTable th,
+.holdingTable td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.holdingTable th {
+  background: rgba(255,255,255,0.035);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.holdingTable td {
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.holdingTable tr:last-child td {
+  border-bottom: 0;
+}
+
+.holdingTable strong,
+.conceptLine {
+  display: block;
+}
+
+.conceptLine {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.holdingRisks {
+  margin-top: 12px;
 }
 
 .backtestTable {
@@ -667,7 +1067,39 @@ a { color: inherit; }
 
 @media (max-width: 680px) {
   .container {
-    padding: 16px 12px 48px;
+    padding: 76px 12px 48px;
+  }
+
+  .topToolbar {
+    top: 10px;
+    width: calc(100% - 24px);
+  }
+
+  .toolbarBrand {
+    display: none;
+  }
+
+  .toolbarActions,
+  .toolbarButton {
+    width: 100%;
+  }
+
+  .toolbarButton {
+    justify-content: center;
+  }
+
+  .floatingPanel {
+    inset: 10px;
+    width: auto;
+    padding: 14px;
+  }
+
+  .panelHeader {
+    display: grid;
+  }
+
+  .panelActions {
+    justify-content: stretch;
   }
 
   .commandDeck,
@@ -686,18 +1118,23 @@ a { color: inherit; }
   }
 
   .searchBar,
+  .compareForm,
   .deckStats,
+  .holdingSummary,
   .signalStack,
   .kvGrid,
   .historyList,
   .decisionList,
   .decisionMetrics,
+  .decisionInputs,
   .moduleHeader {
     grid-template-columns: 1fr;
     display: grid;
   }
 
-  .button {
+  .button,
+  .resultActions,
+  .trackerAction {
     width: 100%;
   }
 
